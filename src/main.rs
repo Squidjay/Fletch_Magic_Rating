@@ -358,24 +358,39 @@ fn add_match(
 
 fn show_rankings(players: &[Player]) {
     println!();
-    println!("=== Player Rankings ===");
+    println!("=== Player Rankings Menu ===");
 
-    //Clone players
-    let mut sorted = players.to_vec();
+    println!("1. Rank by Score");
+    println!("2. Rank by Conservative Score (Rating - RD)");
+    println!("3. Rank by Supreme Score (Rating + RD)");
+    println!("4. Rank by Lowest RD");
 
-    //sort by ranking accending
-    sorted.sort_by(|a, b| {b.rating.partial_cmp(&a.rating).unwrap()});
+    let choice = input("Select option: ");
 
-    //Display rankings based on score
-    for (index, player) in sorted.iter().enumerate() {
-        println!("{}. {} - Rating: {:.2}, RD: {:.2}", index + 1, player.name, player.rating, player.rd); 
+    match choice.as_str() {
+        "1" => {
+            rank_by_score(players);
+        }
+        "2" => {
+            rank_by_rd_substract(players);
+        }
+        "3" => {
+            rank_by_rd_addition(players);
+        }
+        "4" => {
+            rank_by_rd(players);
+        }
+        _ => {
+            println!("Invalid input.");
+        }
     }
+
     println!();
 }
 
-/* 
 fn rank_by_score(players: &[Player]) {    
     //Print
+    println!("");
     println!("=== Rank by Score ===");
     
     //Clone players
@@ -388,29 +403,52 @@ fn rank_by_score(players: &[Player]) {
     for (index, player) in sorted.iter().enumerate() {
         println!("{}. {} - Rating: {:.2}, RD: {:.2}", index + 1, player.name, player.rating, player.rd); 
     }
-    println!();
+    println!("");
 }
-*/
 
-/*
 fn rank_by_rd_substract(players: &[Player]) {
+    println!("");
     println!("=== Rank by Lowest Score ===");
 
     //Clone players
     let mut sorted = players.to_vec();
 
-    //Rating changes
+    sorted.sort_by(|a, b| {(b.rating - b.rd).partial_cmp(&(a.rating - a.rd)).unwrap()});
+
     for (index, player) in sorted.iter().enumerate() {
-        player.rating = player.rating - player.rd;
+        println!("{}. {} - Conservative Rating: {:.2} (Rating: {:.2}, RD: {:.2})",index + 1,player.name,player.rating - player.rd,player.rating,player.rd);
     }
+    println!();
+}
 
-    sorted.sort_by(|a, b| {b.rating.partial_cmp(&a.rating).unwrap()});
+fn rank_by_rd_addition(players: &[Player]) {
+    println!("");
+    println!("=== Rank by Highest Score ===");
+
+    //Clone players
+    let mut sorted = players.to_vec();
+
+    sorted.sort_by(|a, b| {(b.rating + b.rd).partial_cmp(&(a.rating + a.rd)).unwrap()});
 
     for (index, player) in sorted.iter().enumerate() {
-        println!("{}. {} - Rating: {:.2}, RD: {:.2}", index + 1, player.name, player.rating, player.rd);
+        println!("{}. {} - Supreme Rating: {:.2} (Rating: {:.2}, RD: {:.2})",index + 1,player.name,player.rating + player.rd,player.rating,player.rd);
     }
 }
-*/
+
+fn rank_by_rd(players: &[Player]) {
+    println!();
+    println!("=== Rank by Lowest RD ===");
+
+    let mut sorted = players.to_vec();
+
+    sorted.sort_by(|a, b| {a.rd.partial_cmp(&b.rd).unwrap()});
+
+    for (index, player) in sorted.iter().enumerate() {
+        println!("{}. {} - RD: {:.2}, Rating: {:.2}", index + 1, player.name, player.rd, player.rating);
+    }
+
+    println!();
+}
 
 //---
 //Show Match History
