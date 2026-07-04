@@ -454,9 +454,32 @@ fn rank_by_rd(players: &[Player]) {
 //Show Match History
 //---
 
-//Displays all matches played
-fn show_matches(matches: &[MatchRecord]) {
+//Displays the match history menu
+fn show_matche_menu(matches: &[MatchRecord]) {
 
+    println!("");
+    println!("=== MATCH HISTORY ===");
+
+    println!("1. Show all matches");
+    println!("2. Search specific player results");
+
+    let choice = input("Select option: ");
+
+    match choice.as_str() {
+        "1" => {
+            show_matches(matches);
+        }
+        "2" => {
+            search_player_results(matches);
+        }
+        _ => {
+            println!("Invalid input.");
+        }
+    }
+}
+
+//Full match history
+fn show_matches(matches: &[MatchRecord]) {
     println!("");
     println!("=== MATCH HISTORY ===");
 
@@ -474,6 +497,40 @@ fn show_matches(matches: &[MatchRecord]) {
     }
 }
 
+//Show WINS and LOSSES for chosen player
+fn search_player_results(matches: &[MatchRecord]) {
+    //Search for a player and display their wins and losses
+    println!("");
+    println!("\n=== Search Player ===");
+
+    let name = input("Enter player name: ");
+
+    let mut wins = 0;
+    let mut losses = 0;
+
+    //Calculate wins
+    for (i, m) in matches.iter().enumerate() {
+        if m.winner.eq_ignore_ascii_case(&name) {
+            wins += 1;
+        }
+    }
+
+    //Calculate losses
+    for (i, m) in matches.iter().enumerate() {
+        if m.players.iter().any(|p| p.eq_ignore_ascii_case(&name)) && !m.winner.eq_ignore_ascii_case(&name){
+            losses += 1;
+        }
+    }
+
+    //Calculate total matches
+    let mut total: i32 = wins + losses;
+
+    println!("\n=== Summary ===");
+    println!("Total:  {}", total);
+    println!("Wins:   {}", wins);
+    println!("Losses: {}", losses);
+}
+
 fn main() {
     //File paths
     let players_file = "players.json";
@@ -486,7 +543,7 @@ fn main() {
     //Main menu - loop
     loop {
         println!("");
-        println!("=== MTG Glicko Rating System ===");
+        println!("=== MTG Fletch Rating System ===");
 
         println!("1. Add Match");
         println!("2. Show Ranking");
@@ -504,7 +561,7 @@ fn main() {
                 show_rankings(&players);
             }
             "3" => {
-                show_matches(&matches);
+                show_matche_menu(&matches);
             }
             "4" => {
                 save_json(players_file, &players);
