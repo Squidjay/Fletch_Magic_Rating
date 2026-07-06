@@ -1,3 +1,5 @@
+//To anyone reading this code, make sure to run it in powershell with cargo run
+
 //MTG Fletch rating system
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -36,7 +38,7 @@ impl Player {
 }
 
 //---
-//Glicko functions
+//Fletch functions
 //---
 
 //Calculates g(RD) - reduces impacts of players with a big difference
@@ -180,10 +182,7 @@ fn input(prompt: &str) -> String {
 //---
 //Add match
 //---
-fn add_match(
-    players: &mut Vec<Player>,
-    matches: &mut Vec<MatchRecord>,
-) {
+fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
     println!("");
     println!("\n=== ADD MATCH ===");
 
@@ -357,6 +356,7 @@ fn add_match(
 //---
 
 fn show_rankings(players: &[Player]) {
+    //Show menu
     println!();
     println!("=== Player Rankings Menu ===");
 
@@ -456,7 +456,7 @@ fn rank_by_rd(players: &[Player]) {
 
 //Displays the match history menu
 fn show_matche_menu(matches: &[MatchRecord]) {
-
+    //Show menu
     println!("");
     println!("=== MATCH HISTORY ===");
 
@@ -509,21 +509,21 @@ fn search_player_results(matches: &[MatchRecord]) {
     let mut losses = 0;
 
     //Calculate wins
-    for (i, m) in matches.iter().enumerate() {
+    for (_i, m) in matches.iter().enumerate() {
         if m.winner.eq_ignore_ascii_case(&name) {
             wins += 1;
         }
     }
 
     //Calculate losses
-    for (i, m) in matches.iter().enumerate() {
+    for (_i, m) in matches.iter().enumerate() {
         if m.players.iter().any(|p| p.eq_ignore_ascii_case(&name)) && !m.winner.eq_ignore_ascii_case(&name){
             losses += 1;
         }
     }
 
     //Calculate total matches
-    let mut total: i32 = wins + losses;
+    let total: i32 = wins + losses;
 
     println!("\n=== Summary ===");
     println!("Total:  {}", total);
