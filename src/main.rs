@@ -19,9 +19,15 @@ struct Player {
     rd: f64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct MatchPlayer {
+    player: String,
+    commander: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct MatchRecord {
-    players: Vec<String>,
+    players: Vec<MatchPlayer>,
     winner: String,
 }
 
@@ -162,7 +168,7 @@ fn save_json<T>(path: &str, data: &[T]) where T: Serialize, {
 }
 
 //---
-//Input functions
+//Input functions - Basic input function
 //---
 
 fn input(prompt: &str) -> String {
@@ -179,6 +185,12 @@ fn input(prompt: &str) -> String {
     buffer.trim().to_string()
 }
 
+//Clear the terminal to keep things tidy
+fn clear_terminal() {
+    print!("\x1b[2J");
+    std::io::stdout().flush().unwrap();
+}
+
 //---
 //Add match
 //---
@@ -186,9 +198,7 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
     println!("");
     println!("\n=== ADD MATCH ===");
 
-    //
     // SHOW PLAYERS
-    //
 
     for (i, player) in players.iter().enumerate() {
         println!(
@@ -220,25 +230,20 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
     //
 
     let mut selected_indexes = Vec::new();
-    let mut selected_names = Vec::new();
+    let mut selected_players: Vec<MatchPlayer> = Vec::new();
 
     for i in 0..player_count {
 
-        println!(
-            "\nSelect player {}",
-            i + 1
-        );
+        println!("\nSelect player {}", i + 1);
 
-        let choice =
-            input("Player number: ");
+        let choice = input("Player number: ");
 
         let player_index;
 
         if choice == "0" {
 
             println!();
-            let name =
-                input("Enter new player name: ");
+            let name = input("Enter new player name: ");
 
             players.push(Player::new(&name));
 
@@ -263,11 +268,12 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
 
         selected_indexes.push(player_index);
 
-        selected_names.push(
-            players[player_index]
-                .name
-                .clone()
-        );
+        //Ask for the commander/name
+        let commander = input("Commander or name of deck: ");
+        selected_players.push(MatchPlayer {
+            player: players[player_index].name.clone(),
+            commander,
+        })
     }
 
     //
@@ -341,7 +347,7 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
     //
 
     matches.push(MatchRecord {
-        players: selected_names,
+        players: selected_players,
         winner: players[winner_index]
             .name
             .clone(),
@@ -369,18 +375,23 @@ fn show_rankings(players: &[Player]) {
 
     match choice.as_str() {
         "1" => {
+            clear_terminal();
             rank_by_score(players);
         }
         "2" => {
+            clear_terminal();
             rank_by_rd_substract(players);
         }
         "3" => {
+            clear_terminal();
             rank_by_rd_addition(players);
         }
         "4" => {
+            clear_terminal();
             rank_by_rd(players);
         }
         _ => {
+            clear_terminal();
             println!("Invalid input.");
         }
     }
@@ -467,9 +478,11 @@ fn show_matche_menu(matches: &[MatchRecord]) {
 
     match choice.as_str() {
         "1" => {
+            clear_terminal();
             show_matches(matches);
         }
         "2" => {
+            clear_terminal();
             search_player_results(matches);
         }
         _ => {
@@ -490,7 +503,7 @@ fn show_matches(matches: &[MatchRecord]) {
         println!("Players:");
 
         for player in &m.players {
-            println!("- {}", player);
+            println!("- {} ({})", player.player, player.commander);
         }
 
         println!("Winner: {}", m.winner);
@@ -499,31 +512,32 @@ fn show_matches(matches: &[MatchRecord]) {
 
 //Show WINS and LOSSES for chosen player
 fn search_player_results(matches: &[MatchRecord]) {
-    //Search for a player and display their wins and losses
-    println!("");
     println!("\n=== Search Player ===");
 
     let name = input("Enter player name: ");
 
     let mut wins = 0;
     let mut losses = 0;
+    let mut found = false;
 
-    //Calculate wins
-    for (_i, m) in matches.iter().enumerate() {
-        if m.winner.eq_ignore_ascii_case(&name) {
-            wins += 1;
+    for m in matches {
+        if m.players.iter().any(|p| p.player.eq_ignore_ascii_case(&name)) {
+            found = true;
+
+            if m.winner.eq_ignore_ascii_case(&name) {
+                wins += 1;
+            } else {
+                losses += 1;
+            }
         }
     }
 
-    //Calculate losses
-    for (_i, m) in matches.iter().enumerate() {
-        if m.players.iter().any(|p| p.eq_ignore_ascii_case(&name)) && !m.winner.eq_ignore_ascii_case(&name){
-            losses += 1;
-        }
+    if !found {
+        println!("\nPlayer '{}' was not found.", name);
+        return;
     }
 
-    //Calculate total matches
-    let total: i32 = wins + losses;
+    let total = wins + losses;
 
     println!("\n=== Summary ===");
     println!("Total:  {}", total);
@@ -558,6 +572,7 @@ fn main() {
                 add_match(&mut players, &mut matches);
             }
             "2" => {
+                clear_terminal();
                 show_rankings(&players);
             }
             "3" => {
@@ -567,7 +582,7 @@ fn main() {
                 save_json(players_file, &players);
                 save_json(matches_file, &matches);
 
-                println!("Data saved... Now fuck off");
+                println!("Data saved");
 
                 break;
             }
