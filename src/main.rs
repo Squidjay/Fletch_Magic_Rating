@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use strsim::jaro_winkler;
 
 //FLETCH consts
 const Q: f64 = std::f64::consts::LN_10 / 400.0;
@@ -192,24 +193,39 @@ fn clear_terminal() {
 }
 
 //---
+//find player with fuzzy search
+//---
+fn find_player(players: &[Player], query: &str) -> Option<usize> {
+    let query = query.to_lowercase();
+
+     players
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            (
+                i,
+                jaro_winkler(
+                    &query,
+                    &p.name.to_lowercase(),
+                ),
+            )
+        })
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .and_then(|(index, score)| {
+            if score > 0.80 {
+                Some(index)
+            } else {
+                None
+            }
+        })
+}
+
+//---
 //Add match
 //---
 fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
     println!("");
     println!("\n=== ADD MATCH ===");
-
-    // SHOW PLAYERS
-
-    for (i, player) in players.iter().enumerate() {
-        println!(
-            "{}. {} ({:.2})",
-            i + 1,
-            player.name,
-            player.rating
-        );
-    }
-
-    println!("0. Create new player");
 
     //
     // PLAYER COUNT
@@ -236,29 +252,41 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
 
         println!("\nSelect player {}", i + 1);
 
-        let choice = input("Player number: ");
+        // Ask for a player's name instead of a number.
+        let name = input("Player name: ");
 
-        let player_index;
+        // Try to find an existing player using fuzzy search.
+        let player_index = match find_player(players, &name) {
 
-        if choice == "0" {
+            // A matching player was found.
+            Some(index) => {
+                println!("Matched with '{}'.", players[index].name);
+                index
+            }
 
-            println!();
-            let name = input("Enter new player name: ");
+            // No suitable match exists.
+            None => {
 
-            players.push(Player::new(&name));
+                println!("No player matched '{}'.", name);
 
-            player_index = players.len() - 1;
+                let create = input("Create new player? (y/n): ");
 
-        } else {
+                if create.to_lowercase() != "y" {
+                    println!("Player selection cancelled.");
+                    return;
+                }
 
-            player_index = choice
-                .parse::<usize>()
-                .expect("Invalid number")
-                - 1;
-        }
+                // Create a brand-new player.
+                players.push(Player::new(&name));
+
+                println!("Created player '{}'.", name);
+
+                players.len() - 1
+            }
+        };
 
         //
-        // PREVENT DUPLICATES
+        // PREVENT DUPLICATE PLAYERS
         //
 
         if selected_indexes.contains(&player_index) {
@@ -268,12 +296,16 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
 
         selected_indexes.push(player_index);
 
-        //Ask for the commander/name
-        let commander = input("Commander or name of deck: ");
+        //
+        // RECORD THE COMMANDER USED
+        //
+
+        let commander = input("Commander or deck name: ");
+
         selected_players.push(MatchPlayer {
             player: players[player_index].name.clone(),
             commander,
-        })
+        });
     }
 
     //
