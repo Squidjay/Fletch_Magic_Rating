@@ -3,9 +3,11 @@
 //MTG Fletch rating system
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::hash::Hash;
 use std::io::{self, Write};
 use std::path::Path;
 use strsim::jaro_winkler;
+use std::collections::HashMap;
 
 //FLETCH consts
 const Q: f64 = std::f64::consts::LN_10 / 400.0;
@@ -30,6 +32,12 @@ struct MatchPlayer {
 struct MatchRecord {
     players: Vec<MatchPlayer>,
     winner: String,
+}
+
+#[derive(Default)]
+struct CommanderStats {
+    games: u32,
+    wins: u32,
 }
 
 //Player methods
@@ -393,7 +401,7 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
 //Show Rankings
 //---
 
-fn show_rankings(players: &[Player]) {
+fn show_rankings(players: &[Player], matches: &[MatchRecord]) {
     //Show menu
     println!();
     println!("=== Player Rankings Menu ===");
@@ -402,6 +410,7 @@ fn show_rankings(players: &[Player]) {
     println!("2. Rank by Conservative Score (Rating - RD)");
     println!("3. Rank by Supreme Score (Rating + RD)");
     println!("4. Rank by Lowest RD");
+    println!("5. Commander winrates");
 
     let choice = input("Select option: ");
 
@@ -422,6 +431,10 @@ fn show_rankings(players: &[Player]) {
             clear_terminal();
             rank_by_rd(players);
         }
+        "5" => {
+            clear_terminal();
+            commander_winrate_menu(players, matches);
+        }
         _ => {
             clear_terminal();
             println!("Invalid input.");
@@ -429,6 +442,31 @@ fn show_rankings(players: &[Player]) {
     }
 
     println!();
+}
+
+fn commander_winrate_menu(players: &[Player], matches: &[MatchRecord]) {
+    println!("");
+    println!("=== Commander Menu ===");
+
+    println!("1. All commander winrates");
+    println!("2. Player specific commander winrate");
+
+    let choice = input("Select option: ");
+
+    match choice.as_str() {
+        "1" => {
+            clear_terminal();
+            show_commander_winrates(matches);
+        }
+        "2" => {
+            clear_terminal();
+            show_player_commanders(players, matches);
+        }
+        _ => {
+            clear_terminal();
+            println!("Invalid input.");
+        }
+    }
 }
 
 fn rank_by_score(players: &[Player]) {    
@@ -493,12 +531,135 @@ fn rank_by_rd(players: &[Player]) {
     println!();
 }
 
+//View commander winrates
+fn show_commander_winrates(matches: &[MatchRecord]) {
+    println!("");
+    println!("=== Commander winrates");
+
+    let mut stats: HashMap<(String, String), CommanderStats> = HashMap::new();
+
+    //Read each match
+    for m in matches {
+        //Check each player
+        for p in &m.players {
+            //Get or create entry
+            let key = (p.player.clone(), p.commander.clone(),);
+            let entry = stats.entry(key).or_default();
+
+            //Record game players
+            entry.games += 1;
+            //Record win
+            if p.player == m.winner {
+                entry.wins += 1;
+            }
+        }
+    }
+
+    //Convert to vector
+    let mut results: Vec<_> = stats.into_iter().collect();
+
+    //Sort by winrate
+    results.sort_by(|a, b| {
+        let a_rate = a.1.wins as f64 / a.1.games as f64;
+        let b_rate = b.1.wins as f64 / b.1.games as f64;
+
+        b_rate.partial_cmp(&a_rate).unwrap()
+    });
+
+    //Display results
+    for ((player, commander), stat) in results {
+        let win_rate = stat.wins as f64 / stat.games as f64 * 100.0;
+
+        println!(
+            "{} - {} : {:.1}% ({}/{})", player, commander, win_rate, stat.wins, stat.games,);
+    }
+    println!();
+}
+
+// Show commander win rates for a specific player
+fn show_player_commanders(players: &[Player],matches: &[MatchRecord],) {
+    println!();
+    println!("=== Player Commander Statistics ===");
+
+    // Find player with fuzzy search
+    let name = input("Enter player name: ");
+
+    let player_index = match find_player(players, &name) {
+        // Player found
+        Some(index) => {
+            println!("Matched with '{}'.", players[index].name);index
+        }
+
+        // Player not found
+        None => {
+            println!("No player matched '{}'.", name);
+            return;
+        }
+    };
+
+    // Store the correct player name
+    let player_name = &players[player_index].name;
+
+    // Commander stats
+    let mut stats: HashMap<String, CommanderStats> =
+        HashMap::new();
+
+    //Read through every match
+    for m in matches {
+        //Check players
+        for p in &m.players {
+            //Ignore other players
+            if p.player != *player_name {
+                continue;
+            }
+            // Get or create commander entrance
+            let entry = stats.entry(p.commander.clone()).or_default();
+
+            //Record game
+            entry.games += 1;
+
+            // RECORD WIN
+            if p.player == m.winner {
+                entry.wins += 1;
+            }
+        }
+    }
+
+    //If the player has 0 games
+    if stats.is_empty() {
+        println!("No commander data found.");
+        return;
+    }
+
+    //Sort results by wins
+    let mut results: Vec<_> = stats.into_iter().collect();
+
+    results.sort_by(|a, b| {
+        let a_rate = a.1.wins as f64 / a.1.games as f64;
+
+        let b_rate = b.1.wins as f64 / b.1.games as f64;
+
+        b_rate.partial_cmp(&a_rate).unwrap()
+    });
+
+    //Display results
+    println!();
+    println!("=== {}'s Commanders ===", player_name);
+
+    for (commander, stat) in results {
+
+        let win_rate = stat.wins as f64 / stat.games as f64 * 100.0;
+
+        println!("{} - {:.1}% ({}/{})", commander, win_rate, stat.wins, stat.games,);
+    }
+}
+
 //---
 //Show Match History
 //---
 
 //Displays the match history menu
-fn show_matche_menu(matches: &[MatchRecord]) {
+fn show_match_menu(matches: &[MatchRecord]) {
     //Show menu
     println!("");
     println!("=== MATCH HISTORY ===");
@@ -605,10 +766,10 @@ fn main() {
             }
             "2" => {
                 clear_terminal();
-                show_rankings(&players);
+                show_rankings(&players, &matches);
             }
             "3" => {
-                show_matche_menu(&matches);
+                show_match_menu(&matches);
             }
             "4" => {
                 save_json(players_file, &players);
