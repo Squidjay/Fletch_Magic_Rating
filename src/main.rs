@@ -3,7 +3,6 @@
 //MTG Fletch rating system
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::hash::Hash;
 use std::io::{self, Write};
 use std::path::Path;
 use strsim::jaro_winkler;
@@ -32,6 +31,8 @@ struct MatchPlayer {
 struct MatchRecord {
     players: Vec<MatchPlayer>,
     winner: String,
+    match_note: String,
+    turn_win: i16,
 }
 
 #[derive(Default)]
@@ -39,6 +40,15 @@ struct CommanderStats {
     games: u32,
     wins: u32,
 }
+
+/*
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Decks {
+    name: String,
+    power_level: i16,
+    type_of_deck: String,
+}
+*/
 
 //Player methods
 impl Player {
@@ -51,6 +61,8 @@ impl Player {
         }
     }
 }
+
+//Commander methods
 
 //---
 //Fletch functions
@@ -240,19 +252,16 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
     //
 
     let player_count: usize =
-        input("How many players? (2-4): ")
+        input("How many players? (2-5): ")
             .parse()
             .unwrap_or(2);
 
-    if player_count < 2 || player_count > 4 {
+    if player_count < 2 || player_count > 5 {
         println!("Invalid player count.");
         return;
     }
 
-    //
     // SELECT PLAYERS
-    //
-
     let mut selected_indexes = Vec::new();
     let mut selected_players: Vec<MatchPlayer> = Vec::new();
 
@@ -316,58 +325,41 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
         });
     }
 
-    //
     // SELECT WINNER
-    //
-
     println!("\nWho won?");
 
-    for (i, player_index) in
-        selected_indexes.iter().enumerate()
-    {
-        println!(
-            "{}. {}",
-            i + 1,
-            players[*player_index].name
-        );
+    for (i, player_index) in selected_indexes.iter().enumerate() {
+        println!("{}. {}", i + 1, players[*player_index].name);
     }
 
     let winner_choice: usize =
-        input("Winner number: ")
-            .parse()
-            .expect("Invalid number");
+        input("Winner number: ").parse().expect("Invalid number");
 
-    if winner_choice == 0
-        || winner_choice > selected_indexes.len()
-    {
+    if winner_choice == 0 || winner_choice > selected_indexes.len() {
         println!("Invalid winner.");
         return;
     }
 
-    let winner_index =
-        selected_indexes[winner_choice - 1];
+    //Turn that the game was won on
+    let winning_turn: i16 = input("Turn that it was won on: ").parse().expect("N/A");
 
-    //
+    //Any notes
+    let note = input("Match note: ").parse().expect("N/A");
+
+    let winner_index = selected_indexes[winner_choice - 1];
+
     // CLONE ORIGINAL RATINGS
-    //
-
     let originals = players.clone();
 
-    //
     // WINNER BEATS EVERYONE
-    //
-
     for loser_index in &selected_indexes {
-
         if *loser_index == winner_index {
             continue;
         }
 
-        let winner_original =
-            originals[winner_index].clone();
+        let winner_original = originals[winner_index].clone();
 
-        let loser_original =
-            originals[*loser_index].clone();
+        let loser_original = originals[*loser_index].clone();
 
         update_rating(
             &mut players[winner_index],
@@ -382,15 +374,12 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
         );
     }
 
-    //
     // STORE MATCH
-    //
-
     matches.push(MatchRecord {
         players: selected_players,
-        winner: players[winner_index]
-            .name
-            .clone(),
+        winner: players[winner_index].name.clone(),
+        match_note: note,
+        turn_win: winning_turn,
     });
 
     println!("Match recorded.");
@@ -666,6 +655,7 @@ fn show_match_menu(matches: &[MatchRecord]) {
 
     println!("1. Show all matches");
     println!("2. Search specific player results");
+    
 
     let choice = input("Select option: ");
 
@@ -700,6 +690,8 @@ fn show_matches(matches: &[MatchRecord]) {
         }
 
         println!("Winner: {}", m.winner);
+        println!("Turn won on: {}", m.turn_win);
+        println!("Match note: {}", m.match_note);
     }
 }
 
