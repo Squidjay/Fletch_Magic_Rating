@@ -41,14 +41,12 @@ struct CommanderStats {
     wins: u32,
 }
 
-/*
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Decks {
     name: String,
     power_level: i16,
     type_of_deck: String,
 }
-*/
 
 //Player methods
 impl Player {
@@ -63,6 +61,15 @@ impl Player {
 }
 
 //Commander methods
+impl Decks {
+    fn new(name: &str, power_level: i16, type_of_deck: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            power_level: power_level,
+            type_of_deck: type_of_deck.to_string(),
+        }
+    }
+}
 
 //---
 //Fletch functions
@@ -213,15 +220,12 @@ fn clear_terminal() {
 }
 
 //---
-//find player with fuzzy search
+//fuzzy serach
 //---
 fn find_player(players: &[Player], query: &str) -> Option<usize> {
     let query = query.to_lowercase();
 
-     players
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
+     players.iter().enumerate().map(|(i, p)| {
             (
                 i,
                 jaro_winkler(
@@ -240,10 +244,32 @@ fn find_player(players: &[Player], query: &str) -> Option<usize> {
         })
 }
 
+fn find_deck(Decks: &[Decks], query: &str) -> Option<usize> {
+    let query = query.to_lowercase();
+
+    Decks.iter().enumerate().map(|(i, c)| {
+            (
+                i,
+                jaro_winkler(
+                    &query,
+                    &c.name.to_lowercase(),
+                ),
+            )
+        })
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .and_then(|(index, score)| {
+            if score > 0.80 {
+                Some(index)
+            } else {
+                None
+            }
+        })
+}
+
 //---
 //Add match
 //---
-fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
+fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &mut Vec<Decks>,) {
     println!("");
     println!("\n=== ADD MATCH ===");
 
@@ -317,12 +343,34 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>,) {
         // RECORD THE COMMANDER USED
         //
 
-        let commander = input("Commander or deck name: ");
+        let commander_name = input("Commander or deck name: ");
 
-        selected_players.push(MatchPlayer {
-            player: players[player_index].name.clone(),
-            commander,
-        });
+    let commander_index = match find_deck(decks, &commander_name) {
+        Some(index) => {
+            println!("Matched with '{}'.", decks[index].name);
+            index
+        }
+
+        None => {
+            println!("No commander matched '{}'.", commander_name);
+
+            let create = input("Create new commander? (y/n): ");
+
+            if create.to_lowercase() != "y" {
+                println!("Cancelled.");
+                return;
+            }
+
+            decks.push(Decks::new(&commander_name, 0, "Unknown"));
+
+            println!("Created commander '{}'.", commander_name);
+            decks.len() - 1
+        }
+    };
+
+    let commander = decks[commander_index].name.clone();
+
+        selected_players.push(MatchPlayer {player: players[player_index].name.clone(),commander,});
     }
 
     // SELECT WINNER
@@ -734,10 +782,12 @@ fn main() {
     //File paths
     let players_file = "players.json";
     let matches_file = "matches.json";
+    let decks_file = "decks.json";
 
     //Load save data
     let mut players: Vec<Player> = load_json(players_file);
     let mut matches: Vec<MatchRecord> = load_json(matches_file);
+    let mut decks: Vec<Decks> = load_json(decks_file);
 
     //Main menu - loop
     loop {
@@ -754,7 +804,7 @@ fn main() {
         //Menu handling
         match choice.as_str() {
             "1" => {
-                add_match(&mut players, &mut matches);
+                add_match(&mut players, &mut matches, &mut decks); 
             }
             "2" => {
                 clear_terminal();
@@ -766,6 +816,7 @@ fn main() {
             "4" => {
                 save_json(players_file, &players);
                 save_json(matches_file, &matches);
+                save_json(decks_file, &decks);
 
                 println!("Data saved");
 
