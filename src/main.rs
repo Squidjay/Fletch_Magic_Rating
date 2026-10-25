@@ -336,7 +336,7 @@ fn find_deck(decks: &[Decks], query: &str) -> Option<usize> {
         })
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
         .and_then(|(index, score)| {
-            if score > 0.80 {
+            if score > FUZZY_MATCH_THRESHOLD {
                 Some(index)
             } else {
                 None
@@ -347,7 +347,7 @@ fn find_deck(decks: &[Decks], query: &str) -> Option<usize> {
 //---
 //Add match
 //---
-fn add_match(players: &mut Vec<Player>, _matches: &mut Vec<MatchRecord>, decks: &mut Vec<Decks>,) {
+fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &mut Vec<Decks>,) {
     println!("");
     println!("\n=== ADD MATCH ===");
 
@@ -493,15 +493,20 @@ fn add_match(players: &mut Vec<Player>, _matches: &mut Vec<MatchRecord>, decks: 
         return;
     }
 
-    //Turn that the game was won on
-    let _winning_turn: i16 = input("Turn that it was won on: ").parse().expect("N/A");
+    // Turn that the game was won on
+    let winning_turn: i16 = loop {
+    match input("Turn that it was won on: ").parse::<i16>() {
+        Ok(turn) if turn > 0 => break turn,
+        _ => println!("Please enter a whole number greater than 0."),
+    }
+    };
 
-    //Any notes
-    let _note = input("Match note: ");
+    // Any notes
+    let note = input("Match note: ");
 
     let winner_index = selected_indexes[winner_choice - 1];
 
-   // CLONE ORIGINAL RATINGS
+    // CLONE ORIGINAL RATINGS
     //
     // We MUST use the original ratings for every calculation.
     // Otherwise the first opponent could change the rating
@@ -606,6 +611,14 @@ fn add_match(players: &mut Vec<Player>, _matches: &mut Vec<MatchRecord>, decks: 
         LOSS_SCORE,
         );
     }
+
+        // Save the match so history and winrates can see it.
+    matches.push(MatchRecord {
+        players: selected_players,
+        winner: players[winner_index].name.clone(),
+        match_note: note,
+        turn_win: winning_turn,
+    });
 }
 
 // Updates a player's rating using the effective rating
@@ -661,17 +674,15 @@ fn update_player_rating_with_decks(
         + (1.0 / d2)
     )
     .powf(-0.5)
-    .min(350.0);
+    .min(MAX_RD);
 
     // Surprise factor.
     let surprise = (score - e).abs();
 
-    if surprise > 0.5 {
-        let increase = (surprise - 0.5) * 40.0;
-        player.rd += increase;
+    if surprise > SURPRISE_THRESHOLD {
+        player.rd += (surprise - SURPRISE_THRESHOLD) * SURPRISE_RD_INCREASE_SCALE;
     } else {
-        let decrease = (0.5 - surprise) * 10.0;
-        player.rd -= decrease;
+        player.rd -= (SURPRISE_THRESHOLD - surprise) * SURPRISE_RD_DECREASE_SCALE;
     }
 
     // Clamp RD.
