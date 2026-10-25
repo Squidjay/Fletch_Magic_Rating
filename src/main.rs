@@ -8,10 +8,47 @@ use std::path::Path;
 use strsim::jaro_winkler;
 use std::collections::HashMap;
 
-//FLETCH consts
-const Q: f64 = std::f64::consts::LN_10 / 400.0;
+//---
+//Glicko / FLETCH constants
+//---
+
+// Rating scale: a 400-point gap is a 10:1 expected-score ratio
+const RATING_SCALE: f64 = 400.0;
+const Q: f64 = std::f64::consts::LN_10 / RATING_SCALE;
+
+// The 3 in g(RD) = 1 / sqrt(1 + 3q²RD²/π²)
+const G_COEFFICIENT: f64 = 3.0;
+
 const DEFAULT_RATING: f64 = 1500.0;
 const DEFAULT_RD: f64 = 350.0;
+const MAX_RD: f64 = DEFAULT_RD;
+const MIN_RD: f64 = 30.0;
+
+// How a rating change is divided between player and deck
+const DECK_SHARE: f64 = 0.30;
+const PLAYER_SHARE: f64 = 1.0 - DECK_SHARE;
+
+// Surprise adjustment to RD
+const SURPRISE_THRESHOLD: f64 = 0.5;
+const SURPRISE_RD_INCREASE_SCALE: f64 = 40.0;
+const SURPRISE_RD_DECREASE_SCALE: f64 = 10.0;
+
+// Match scores
+const WIN_SCORE: f64 = 1.0;
+const LOSS_SCORE: f64 = 0.0;
+
+// Starting deck rating by bracket (index 0 = bracket 1)
+const MIN_BRACKET: i16 = 1;
+const MAX_BRACKET: i16 = 5;
+const BRACKET_STARTING_RATINGS: [f64; 5] = [1300.0, 1450.0, 1600.0, 1750.0, 1900.0];
+
+//---
+//Input / UI constants
+//---
+const MIN_PLAYERS: usize = 2;
+const MAX_PLAYERS: usize = 5;
+const FUZZY_MATCH_THRESHOLD: f64 = 0.80;
+const CLEAR_SCREEN: &str = "\x1b[2J";
 
 //Structs
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -44,8 +81,10 @@ struct CommanderStats {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Decks {
     name: String,
-    power_level: i16,
+    bracket: i16,
     type_of_deck: String,
+    rating: f64,
+    rd: f64,
 }
 
 //Player methods
@@ -62,11 +101,17 @@ impl Player {
 
 //Commander methods
 impl Decks {
-    fn new(name: &str, power_level: i16, type_of_deck: &str) -> Self {
+    fn new(
+        name: String,
+        bracket: i16,
+        type_of_deck: String,
+    ) -> Self {
         Self {
-            name: name.to_string(),
-            power_level: power_level,
-            type_of_deck: type_of_deck.to_string(),
+            name,
+            bracket,
+            type_of_deck,
+            rating: starting_rating_for_bracket(bracket),
+            rd: DEFAULT_RD,
         }
     }
 }
@@ -77,68 +122,91 @@ impl Decks {
 
 //Calculates g(RD) - reduces impacts of players with a big difference
 fn g(rd: f64) -> f64 {
-    1.0 / (1.0 + (3.0 * Q.powi(2) * rd.powi(2)) / std::f64::consts::PI.powi(2)).sqrt()
+    1.0 / (1.0 + (G_COEFFICIENT * Q.powi(2) * rd.powi(2)) / std::f64::consts::PI.powi(2)).sqrt()
 }
 
-//Calculates expected score
-fn expected_score(player_rating: f64, opponent_rating: f64, opponent_rd: f64) -> f64 {
-    1.0 / (1.0 + 10_f64.powf(-g(opponent_rd) * (player_rating - opponent_rating) / 400.0,))
+// Calculates the effective rating of a player using a deck.
+//
+// A deck rated 1500 has no effect.
+// A deck rated above 1500 increases the effective rating.
+// A deck rated below 1500 decreases the effective rating.
+fn effective_rating(player: &Player, deck: &Decks) -> f64 {
+    player.rating + (deck.rating - DEFAULT_RATING)
 }
 
-//Updates a player's rating
-//1.0 is a win
-//0.5 is a Draw
-//0.0 is a loss
-fn update_rating(player: &mut Player, opponent: &Player, score: f64) {
-    let g_rd = g(opponent.rd);
+// Updates a deck's rating.
+//
+// Decks receive a smaller portion of the rating change
+// because the main rating is intended to represent the player.
+fn update_deck_rating(
+    deck: &mut Decks,
+    opponent_deck: &Decks,
+    player: &Player,
+    opponent_player: &Player,
+    score: f64,
+) {
+    // Effective ratings include the player using each deck.
+    let player_effective = effective_rating(player, deck);
+    let opponent_effective = effective_rating(opponent_player, opponent_deck);
 
-    //expected score
-    let e = expected_score(player.rating, opponent.rating, opponent.rd);
+    // Use the opponent deck's RD.
+    let g_rd = g(opponent_deck.rd);
 
-    //variance
-    let d2 = 1.0 / (Q.powi(2) * g_rd.powi(2) * e * (1.0 - e));
+    // Expected result based on player + deck strength.
+    let e = 1.0 / (
+        1.0
+        + 10_f64.powf(
+            -g_rd * (player_effective - opponent_effective) / RATING_SCALE
+        )
+    );
 
-    //Rating adjustment factor
-    let pre_factor = Q / ((1.0 / player.rd.powi(2)) + (1.0 / d2));
+    // Variance.
+    let d2 = 1.0 / (
+        Q.powi(2)
+        * g_rd.powi(2)
+        * e
+        * (1.0 - e)
+    );
 
-    //Actual rating change
-    let rating_change = pre_factor * g_rd * (score - e);
-    //Apply rating change
-    player.rating += rating_change;
+    // Rating adjustment factor.
+    let pre_factor =
+        Q / ((1.0 / deck.rd.powi(2)) + (1.0 / d2));
 
-    //Update rating deviation
-    player.rd = ((1.0 / player.rd.powi(2)) + (1.0 / d2)).powf(-0.5).min(350.0);
+    // Calculate the normal rating change.
+    let rating_change =
+        pre_factor * g_rd * (score - e);
 
-    //Surprise factor
-    
+    // Only 30% of the total change goes to the deck.
+    deck.rating += rating_change * DECK_SHARE;
+
+    // Update RD.
+    deck.rd = (
+        (1.0 / deck.rd.powi(2))
+        + (1.0 / d2)
+    )
+    .powf(-0.5)
+    .min(MAX_RD);
+
+    // Surprise factor.
     let surprise = (score - e).abs();
 
-    // EXPECTED RESULTS: LOWER RD
-    // SURPRISING RESULTS: RAISE RD
-
-    if surprise > 0.5 {
-
-        // Increase uncertainty
-
-        let increase = (surprise - 0.5) * 40.0;
-
-        player.rd += increase;
-
+    if surprise > SURPRISE_THRESHOLD {
+        deck.rd += (surprise - SURPRISE_THRESHOLD) * SURPRISE_RD_INCREASE_SCALE;
     } else {
-
-        // Increase confidence
-
-        let decrease = (0.5 - surprise) * 10.0;
-
-        player.rd -= decrease;
+        deck.rd -= (SURPRISE_THRESHOLD - surprise) * SURPRISE_RD_DECREASE_SCALE;
     }
 
-    // CLAMP RD
+    // Clamp RD.
+    deck.rd = deck.rd.clamp(MIN_RD, MAX_RD);
+}
 
-    player.rd = player.rd.clamp(
-        30.0,   // Minimum RD
-        350.0,  // Maximum RD
-    );
+
+fn starting_rating_for_bracket(bracket: i16) -> f64 {
+    if (MIN_BRACKET..=MAX_BRACKET).contains(&bracket) {
+        BRACKET_STARTING_RATINGS[(bracket - MIN_BRACKET) as usize]
+    } else {
+        DEFAULT_RATING
+    }
 }
 
 //---
@@ -215,7 +283,7 @@ fn input(prompt: &str) -> String {
 
 //Clear the terminal to keep things tidy
 fn clear_terminal() {
-    print!("\x1b[2J");
+    print!("{}", CLEAR_SCREEN);
     std::io::stdout().flush().unwrap();
 }
 
@@ -236,7 +304,7 @@ fn find_player(players: &[Player], query: &str) -> Option<usize> {
         })
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
         .and_then(|(index, score)| {
-            if score > 0.80 {
+            if score > FUZZY_MATCH_THRESHOLD {
                 Some(index)
             } else {
                 None
@@ -244,15 +312,25 @@ fn find_player(players: &[Player], query: &str) -> Option<usize> {
         })
 }
 
-fn find_deck(Decks: &[Decks], query: &str) -> Option<usize> {
-    let query = query.to_lowercase();
+fn find_deck(decks: &[Decks], query: &str) -> Option<usize> {
+    let query = query.trim().to_lowercase();
 
-    Decks.iter().enumerate().map(|(i, c)| {
+    // First: exact match
+    if let Some((index, _)) = decks.iter().enumerate()
+        .find(|(_, deck)| deck.name.trim().to_lowercase() == query)
+    {
+        return Some(index);
+    }
+
+    // Second: fuzzy match
+    decks.iter()
+        .enumerate()
+        .map(|(i, deck)| {
             (
                 i,
                 jaro_winkler(
                     &query,
-                    &c.name.to_lowercase(),
+                    &deck.name.to_lowercase(),
                 ),
             )
         })
@@ -269,7 +347,7 @@ fn find_deck(Decks: &[Decks], query: &str) -> Option<usize> {
 //---
 //Add match
 //---
-fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &mut Vec<Decks>,) {
+fn add_match(players: &mut Vec<Player>, _matches: &mut Vec<MatchRecord>, decks: &mut Vec<Decks>,) {
     println!("");
     println!("\n=== ADD MATCH ===");
 
@@ -278,11 +356,11 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &
     //
 
     let player_count: usize =
-        input("How many players? (2-5): ")
-            .parse()
-            .unwrap_or(2);
+    input(&format!("How many players? ({}-{}): ", MIN_PLAYERS, MAX_PLAYERS))
+        .parse()
+        .unwrap_or(MIN_PLAYERS);
 
-    if player_count < 2 || player_count > 5 {
+    if !(MIN_PLAYERS..=MAX_PLAYERS).contains(&player_count) {
         println!("Invalid player count.");
         return;
     }
@@ -361,10 +439,37 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &
                 return;
             }
 
-            decks.push(Decks::new(&commander_name, 0, "Unknown"));
+            println!("=== Add Deck ===");
+
+            println!("Enter deck name:");
+            let name = input("");
+
+            println!("Enter deck bracket ({}-{}):", MIN_BRACKET, MAX_BRACKET);
+            let bracket: i16 = loop {
+            let value = input("");
+            match value.parse::<i16>() {
+                Ok(bracket) if (MIN_BRACKET..=MAX_BRACKET).contains(&bracket) => break bracket,
+            _ => println!("Please enter a bracket between {} and {}:", MIN_BRACKET, MAX_BRACKET),
+            }
+        };
+
+            println!("Enter deck type:");
+            let type_of_deck = input("");
+
+            let deck = Decks::new(
+                name,
+                bracket,
+                type_of_deck,
+            );
+
+            decks.push(deck);
+
+            println!("Deck added successfully!");
 
             println!("Created commander '{}'.", commander_name);
             decks.len() - 1
+
+            
         }
     };
 
@@ -389,93 +494,271 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &
     }
 
     //Turn that the game was won on
-    let winning_turn: i16 = input("Turn that it was won on: ").parse().expect("N/A");
+    let _winning_turn: i16 = input("Turn that it was won on: ").parse().expect("N/A");
 
     //Any notes
-    let note = input("Match note: ").parse().expect("N/A");
+    let _note = input("Match note: ");
 
     let winner_index = selected_indexes[winner_choice - 1];
 
-    // CLONE ORIGINAL RATINGS
-    let originals = players.clone();
+   // CLONE ORIGINAL RATINGS
+    //
+    // We MUST use the original ratings for every calculation.
+    // Otherwise the first opponent could change the rating
+    // used against the second opponent.
+    let original_players = players.clone();
+    let original_decks = decks.clone();
 
     // WINNER BEATS EVERYONE
     for loser_index in &selected_indexes {
         if *loser_index == winner_index {
-            continue;
-        }
-
-        let winner_original = originals[winner_index].clone();
-
-        let loser_original = originals[*loser_index].clone();
-
-        update_rating(
-            &mut players[winner_index],
-            &loser_original,
-            1.0,
-        );
-
-        update_rating(
-            &mut players[*loser_index],
-            &winner_original,
-            0.0,
-        );
+        continue;
     }
 
-    // STORE MATCH
-    matches.push(MatchRecord {
-        players: selected_players,
-        winner: players[winner_index].name.clone(),
-        match_note: note,
-        turn_win: winning_turn,
-    });
+    // -----------------------------
+    // FIND WINNER'S DECK
+    // -----------------------------
 
-    println!("Match recorded.");
-    println!("");
+    let winner_match_player =
+        selected_players
+            .iter()
+            .find(|p| {
+                p.player == original_players[winner_index].name
+            })
+            .unwrap();
+
+    // -----------------------------
+    // FIND LOSER'S DECK
+    // -----------------------------
+
+    let loser_match_player =
+        selected_players
+            .iter()
+            .find(|p| {
+                p.player == original_players[*loser_index].name
+            })
+            .unwrap();
+
+    // Find deck indexes.
+    let winner_deck_index =
+        find_deck(
+            &original_decks,
+            &winner_match_player.commander,
+        )
+        .unwrap();
+
+    let loser_deck_index =
+        find_deck(
+            &original_decks,
+            &loser_match_player.commander,
+        )
+        .unwrap();
+
+    let winner_original_player =
+        original_players[winner_index].clone();
+
+    let loser_original_player =
+        original_players[*loser_index].clone();
+
+    let winner_original_deck =
+        original_decks[winner_deck_index].clone();
+
+    let loser_original_deck =
+        original_decks[loser_deck_index].clone();
+
+    // -----------------------------
+    // UPDATE PLAYER RATINGS
+    // -----------------------------
+
+    update_player_rating_with_decks(
+        &mut players[winner_index],
+        &loser_original_player,
+        &winner_original_deck,
+        &loser_original_deck,
+        WIN_SCORE,
+    );
+
+    update_player_rating_with_decks(
+        &mut players[*loser_index],
+        &winner_original_player,
+        &loser_original_deck,
+        &winner_original_deck,
+        LOSS_SCORE,
+    );
+
+    // -----------------------------
+    // UPDATE DECK RATINGS
+    // -----------------------------
+
+    update_deck_rating(
+        &mut decks[winner_deck_index],
+        &loser_original_deck,
+        &winner_original_player,
+        &loser_original_player,
+        WIN_SCORE,
+    );
+
+    update_deck_rating(
+        &mut decks[loser_deck_index],
+        &winner_original_deck,
+        &loser_original_player,
+        &winner_original_player,
+        LOSS_SCORE,
+        );
+    }
+}
+
+// Updates a player's rating using the effective rating
+// of their opponent's player + deck combination.
+fn update_player_rating_with_decks(
+    player: &mut Player,
+    opponent: &Player,
+    player_deck: &Decks,
+    opponent_deck: &Decks,
+    score: f64,
+) {
+    // Effective ratings.
+    let player_effective =
+        effective_rating(player, player_deck);
+
+    let opponent_effective =
+        effective_rating(opponent, opponent_deck);
+
+    let g_rd = g(opponent_deck.rd);
+
+    // Expected score.
+    let e = 1.0 / (
+        1.0
+        + 10_f64.powf(
+            -g_rd
+                * (player_effective - opponent_effective)
+                / RATING_SCALE
+        )
+    );
+
+    // Variance.
+    let d2 = 1.0 / (
+        Q.powi(2)
+        * g_rd.powi(2)
+        * e
+        * (1.0 - e)
+    );
+
+    // Rating adjustment factor.
+    let pre_factor =
+        Q / ((1.0 / player.rd.powi(2)) + (1.0 / d2));
+
+    // Actual rating change.
+    let rating_change =
+        pre_factor * g_rd * (score - e);
+
+    // Player receives 70%.
+    player.rating += rating_change * PLAYER_SHARE;
+
+    // Update RD.
+    player.rd = (
+        (1.0 / player.rd.powi(2))
+        + (1.0 / d2)
+    )
+    .powf(-0.5)
+    .min(350.0);
+
+    // Surprise factor.
+    let surprise = (score - e).abs();
+
+    if surprise > 0.5 {
+        let increase = (surprise - 0.5) * 40.0;
+        player.rd += increase;
+    } else {
+        let decrease = (0.5 - surprise) * 10.0;
+        player.rd -= decrease;
+    }
+
+    // Clamp RD.
+    player.rd = player.rd.clamp(MIN_RD, MAX_RD);
 }
 
 //---
 //Show Rankings
 //---
 
-fn show_rankings(players: &[Player], matches: &[MatchRecord]) {
+fn show_rankings(
+    players: &[Player],
+    matches: &[MatchRecord],
+    decks: &[Decks],
+) {
     //Show menu
     println!();
     println!("=== Player Rankings Menu ===");
 
-    println!("1. Rank by Score");
-    println!("2. Rank by Conservative Score (Rating - RD)");
-    println!("3. Rank by Supreme Score (Rating + RD)");
-    println!("4. Rank by Lowest RD");
-    println!("5. Commander winrates");
+    println!("1. Player Rankings");
+    println!("2. Deck Rankings");
+    println!("3. Commander winrates");
 
     let choice = input("Select option: ");
 
     match choice.as_str() {
-        "1" => {
-            clear_terminal();
-            rank_by_score(players);
+    "1" => {
+        clear_terminal();
+
+        println!("=== Player Rankings ===");
+        println!("1. Rank by Score");
+        println!("2. Rank by Conservative Score");
+        println!("3. Rank by Supreme Score");
+        println!("4. Rank by Lowest RD");
+
+        let ranking_choice = input("Select option: ");
+
+        match ranking_choice.as_str() {
+            "1" => rank_by_score(players),
+            "2" => rank_by_rd_substract(players),
+            "3" => rank_by_rd_addition(players),
+            "4" => rank_by_rd(players),
+            _ => println!("Invalid input."),
         }
-        "2" => {
-            clear_terminal();
-            rank_by_rd_substract(players);
-        }
-        "3" => {
-            clear_terminal();
-            rank_by_rd_addition(players);
-        }
-        "4" => {
-            clear_terminal();
-            rank_by_rd(players);
-        }
-        "5" => {
-            clear_terminal();
-            commander_winrate_menu(players, matches);
-        }
-        _ => {
-            clear_terminal();
-            println!("Invalid input.");
-        }
+    }
+
+    "2" => {
+        clear_terminal();
+        deck_ranking_menu(decks);
+    }
+
+    "3" => {
+        clear_terminal();
+        commander_winrate_menu(players, matches);
+    }
+
+    _ => {
+        clear_terminal();
+        println!("Invalid input.");
+    }
+}
+
+    println!();
+}
+
+fn rank_decks(decks: &[Decks]) {
+    println!();
+    println!("=== Deck Rankings ===");
+
+    let mut sorted = decks.to_vec();
+
+    sorted.sort_by(|a, b| {
+        b.rating
+            .partial_cmp(&a.rating)
+            .unwrap()
+    });
+
+    for (index, deck) in sorted.iter().enumerate() {
+        println!(
+        "{}. {} - Rating: {:.2}, RD: {:.2}, Bracket: {}, Type: {}",
+        index + 1,
+        deck.name,
+        deck.rating,
+        deck.rd,
+        deck.bracket,
+        deck.type_of_deck
+        );
     }
 
     println!();
@@ -563,6 +846,58 @@ fn rank_by_rd(players: &[Player]) {
 
     for (index, player) in sorted.iter().enumerate() {
         println!("{}. {} - RD: {:.2}, Rating: {:.2}", index + 1, player.name, player.rd, player.rating);
+    }
+
+    println!();
+}
+
+fn rank_decks_by_conservative(decks: &[Decks]) {
+    println!();
+    println!("=== Deck Conservative Ranking ===");
+
+    let mut sorted = decks.to_vec();
+
+    sorted.sort_by(|a, b| {
+        (b.rating - b.rd)
+            .partial_cmp(&(a.rating - a.rd))
+            .unwrap()
+    });
+
+    for (index, deck) in sorted.iter().enumerate() {
+        println!(
+            "{}. {} - Conservative Rating: {:.2} (Rating: {:.2}, RD: {:.2})",
+            index + 1,
+            deck.name,
+            deck.rating - deck.rd,
+            deck.rating,
+            deck.rd
+        );
+    }
+
+    println!();
+}
+
+fn rank_decks_by_supreme(decks: &[Decks]) {
+    println!();
+    println!("=== Deck Supreme Ranking ===");
+
+    let mut sorted = decks.to_vec();
+
+    sorted.sort_by(|a, b| {
+        (b.rating + b.rd)
+            .partial_cmp(&(a.rating + a.rd))
+            .unwrap()
+    });
+
+    for (index, deck) in sorted.iter().enumerate() {
+        println!(
+            "{}. {} - Supreme Rating: {:.2} (Rating: {:.2}, RD: {:.2})",
+            index + 1,
+            deck.name,
+            deck.rating + deck.rd,
+            deck.rating,
+            deck.rd
+        );
     }
 
     println!();
@@ -778,6 +1113,65 @@ fn search_player_results(matches: &[MatchRecord]) {
     println!("Losses: {}", losses);
 }
 
+//Deck ranking menu
+fn deck_ranking_menu(decks: &[Decks]) {
+    println!();
+    println!("=== Deck Rankings Menu ===");
+
+    println!("1. Rank by Score");
+    println!("2. Rank by Conservative Score");
+    println!("3. Rank by Supreme Score");
+    println!("4. Rank by Lowest RD");
+
+    let choice = input("Select option: ");
+
+    match choice.as_str() {
+        "1" => {
+            clear_terminal();
+            rank_decks(decks);
+        }
+
+        "2" => {
+            clear_terminal();
+            rank_decks_by_conservative(decks);
+        }
+
+        "3" => {
+            clear_terminal();
+            rank_decks_by_supreme(decks);
+        }
+
+        "4" => {
+            clear_terminal();
+
+            let mut sorted = decks.to_vec();
+
+            sorted.sort_by(|a, b| {
+                a.rd.partial_cmp(&b.rd).unwrap()
+            });
+
+            println!("=== Decks by Lowest RD ===");
+
+            for (index, deck) in sorted.iter().enumerate() {
+                println!(
+                    "{}. {} - RD: {:.2}, Rating: {:.2}",
+                    index + 1,
+                    deck.name,
+                    deck.rd,
+                    deck.rating
+                );
+            }
+        }
+
+        _ => {
+            clear_terminal();
+            println!("Invalid input.");
+        }
+    }
+
+    println!();
+}
+
 fn main() {
     //File paths
     let players_file = "players.json";
@@ -808,7 +1202,7 @@ fn main() {
             }
             "2" => {
                 clear_terminal();
-                show_rankings(&players, &matches);
+                show_rankings(&players, &matches, &decks);
             }
             "3" => {
                 show_match_menu(&matches);
