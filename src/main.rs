@@ -64,6 +64,12 @@ struct MatchPlayer {
     commander: String,
 }
 
+struct Opponent {
+    effective: f64,
+    deck_rd: f64,
+    score: f64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct MatchRecord {
     players: Vec<MatchPlayer>,
@@ -134,79 +140,51 @@ fn effective_rating(player: &Player, deck: &Decks) -> f64 {
     player.rating + (deck.rating - DEFAULT_RATING)
 }
 
-// Updates a deck's rating.
-//
-// Decks receive a smaller portion of the rating change
-// because the main rating is intended to represent the player.
-fn update_deck_rating(
-    deck: &mut Decks,
-    opponent_deck: &Decks,
-    player: &Player,
-    opponent_player: &Player,
-    score: f64,
-) {
-    // Effective ratings include the player using each deck.
-    let player_effective = effective_rating(player, deck);
-    let opponent_effective = effective_rating(opponent_player, opponent_deck);
-
-    // Use the opponent deck's RD.
-    let g_rd = g(opponent_deck.rd);
-
-    // Expected result based on player + deck strength.
-    let e = 1.0 / (
-        1.0
-        + 10_f64.powf(
-            -g_rd * (player_effective - opponent_effective) / RATING_SCALE
-        )
-    );
-
-    // Variance.
-    let d2 = 1.0 / (
-        Q.powi(2)
-        * g_rd.powi(2)
-        * e
-        * (1.0 - e)
-    );
-
-    // Rating adjustment factor.
-    let pre_factor =
-        Q / ((1.0 / deck.rd.powi(2)) + (1.0 / d2));
-
-    // Calculate the normal rating change.
-    let rating_change =
-        pre_factor * g_rd * (score - e);
-
-    // Only 30% of the total change goes to the deck.
-    deck.rating += rating_change * DECK_SHARE;
-
-    // Update RD.
-    deck.rd = (
-        (1.0 / deck.rd.powi(2))
-        + (1.0 / d2)
-    )
-    .powf(-0.5)
-    .min(MAX_RD);
-
-    // Surprise factor.
-    let surprise = (score - e).abs();
-
-    if surprise > SURPRISE_THRESHOLD {
-        deck.rd += (surprise - SURPRISE_THRESHOLD) * SURPRISE_RD_INCREASE_SCALE;
-    } else {
-        deck.rd -= (SURPRISE_THRESHOLD - surprise) * SURPRISE_RD_DECREASE_SCALE;
-    }
-
-    // Clamp RD.
-    deck.rd = deck.rd.clamp(MIN_RD, MAX_RD);
-}
-
-
 fn starting_rating_for_bracket(bracket: i16) -> f64 {
     if (MIN_BRACKET..=MAX_BRACKET).contains(&bracket) {
         BRACKET_STARTING_RATINGS[(bracket - MIN_BRACKET) as usize]
     } else {
         DEFAULT_RATING
     }
+}
+
+// Returns (rating change already multiplied by `share`, new RD)
+fn glicko_update(
+    own_effective: f64,
+    own_rd: f64,
+    share: f64,
+    opponents: &[Opponent],
+) -> (f64, f64) {
+    let mut varience_sum = 0.0;
+    let mut score_sum = 0.0;
+    let mut surpise_sum = 0.0;
+
+    for opp in opponents {
+        let g_rd = g(opp.deck_rd);
+        let e = 1.0 / 
+            (1.0 / 10_f64.powf(-g_rd * (own_effective - opp.effective) / RATING_SCALE));
+        
+        varience_sum += g_rd.powi(2) * e * (1.0 - e);
+        score_sum += g_rd * (opp.score - e);
+        surpise_sum += (opp.score - e).abs();
+    }
+
+    let d2 = 1.0 / (Q.powi(2) * varience_sum);
+    let precision = 1.0 / own_rd.powi(2) + 1.0 / d2;
+
+    let rating_change = Q / precision * score_sum * share;
+
+    let mut new_rd = precision.powf(-0.5).min(MAX_RD);
+
+    // Surprise adjustment, avereged over the opponents faced
+    let surprise  = surpise_sum / opponents.len() as f64;
+    if surprise > SURPRISE_THRESHOLD {
+        new_rd += (SURPRISE_THRESHOLD - surprise) * SURPRISE_RD_INCREASE_SCALE;
+    } else {
+        new_rd -= (SURPRISE_THRESHOLD - surprise) * SURPRISE_RD_DECREASE_SCALE;
+    }
+
+    (rating_change, new_rd.clamp(MIN_RD, MAX_RD))
 }
 
 //---
@@ -367,6 +345,7 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &
 
     // SELECT PLAYERS
     let mut selected_indexes = Vec::new();
+    let mut selected_deck_indexes: Vec<usize> = Vec::new();
     let mut selected_players: Vec<MatchPlayer> = Vec::new();
 
     for i in 0..player_count {
@@ -423,7 +402,7 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &
 
         let commander_name = input("Commander or deck name: ");
 
-    let commander_index = match find_deck(decks, &commander_name) {
+        let commander_index = match find_deck(decks, &commander_name) {
         Some(index) => {
             println!("Matched with '{}'.", decks[index].name);
             index
@@ -446,12 +425,13 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &
 
             println!("Enter deck bracket ({}-{}):", MIN_BRACKET, MAX_BRACKET);
             let bracket: i16 = loop {
-            let value = input("");
-            match value.parse::<i16>() {
-                Ok(bracket) if (MIN_BRACKET..=MAX_BRACKET).contains(&bracket) => break bracket,
-            _ => println!("Please enter a bracket between {} and {}:", MIN_BRACKET, MAX_BRACKET),
-            }
-        };
+                let value = input("");
+
+                match value.parse::<i16>() {
+                    Ok(bracket) if (MIN_BRACKET..=MAX_BRACKET).contains(&bracket) => break bracket,
+                    _ => println!("Please enter a bracket between {} and {}:", MIN_BRACKET, MAX_BRACKET),
+                }
+            };
 
             println!("Enter deck type:");
             let type_of_deck = input("");
@@ -473,8 +453,9 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &
         }
     };
 
-    let commander = decks[commander_index].name.clone();
+    selected_deck_indexes.push(commander_index);
 
+    let commander = decks[commander_index].name.clone();
         selected_players.push(MatchPlayer {player: players[player_index].name.clone(),commander,});
     }
 
@@ -495,10 +476,10 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &
 
     // Turn that the game was won on
     let winning_turn: i16 = loop {
-    match input("Turn that it was won on: ").parse::<i16>() {
-        Ok(turn) if turn > 0 => break turn,
-        _ => println!("Please enter a whole number greater than 0."),
-    }
+        match input("Turn that it was won on: ").parse::<i16>() {
+            Ok(turn) if turn > 0 => break turn,
+            _ => println!("Please enter a whole number greater than 0."),
+        }
     };
 
     // Any notes
@@ -507,186 +488,64 @@ fn add_match(players: &mut Vec<Player>, matches: &mut Vec<MatchRecord>, decks: &
     let winner_index = selected_indexes[winner_choice - 1];
 
     // CLONE ORIGINAL RATINGS
-    //
-    // We MUST use the original ratings for every calculation.
-    // Otherwise the first opponent could change the rating
-    // used against the second opponent.
-    let original_players = players.clone();
-    let original_decks = decks.clone();
+        // Snapshot ratings so every calculation uses pre-match values.
+    let snap_players = players.clone();
+    let snap_decks = decks.clone();
 
-    // WINNER BEATS EVERYONE
-    for loser_index in &selected_indexes {
-        if *loser_index == winner_index {
-        continue;
+    let winner_pos = winner_choice - 1;
+    let count = selected_indexes.len();
+
+    let effective_at = |pos: usize| {
+        effective_rating(
+            &snap_players[selected_indexes[pos]],
+            &snap_decks[selected_deck_indexes[pos]],
+        )
+    };
+
+    // (player idx, deck idx, player change, player RD, deck change, deck RD)
+    let mut updates: Vec<(usize, usize, f64, f64, f64, f64)> = Vec::new();
+
+    for pos in 0..count {
+        let is_winner = pos == winner_pos;
+        let score = if is_winner { WIN_SCORE } else { LOSS_SCORE };
+
+        // The winner faces everyone; each loser faces only the winner.
+        let opponents: Vec<Opponent> = (0..count)
+            .filter(|&o| o != pos && (is_winner || o == winner_pos))
+            .map(|o| Opponent {
+                effective: effective_at(o),
+                deck_rd: snap_decks[selected_deck_indexes[o]].rd,
+                score,
+            })
+            .collect();
+
+        let player_idx = selected_indexes[pos];
+        let deck_idx = selected_deck_indexes[pos];
+        let own_effective = effective_at(pos);
+
+        let (p_change, p_rd) = glicko_update(
+            own_effective, snap_players[player_idx].rd, PLAYER_SHARE, &opponents);
+        let (d_change, d_rd) = glicko_update(
+            own_effective, snap_decks[deck_idx].rd, DECK_SHARE, &opponents);
+
+        updates.push((player_idx, deck_idx, p_change, p_rd, d_change, d_rd));
     }
 
-    // -----------------------------
-    // FIND WINNER'S DECK
-    // -----------------------------
-
-    let winner_match_player =
-        selected_players
-            .iter()
-            .find(|p| {
-                p.player == original_players[winner_index].name
-            })
-            .unwrap();
-
-    // -----------------------------
-    // FIND LOSER'S DECK
-    // -----------------------------
-
-    let loser_match_player =
-        selected_players
-            .iter()
-            .find(|p| {
-                p.player == original_players[*loser_index].name
-            })
-            .unwrap();
-
-    // Find deck indexes.
-    let winner_deck_index =
-        find_deck(
-            &original_decks,
-            &winner_match_player.commander,
-        )
-        .unwrap();
-
-    let loser_deck_index =
-        find_deck(
-            &original_decks,
-            &loser_match_player.commander,
-        )
-        .unwrap();
-
-    let winner_original_player =
-        original_players[winner_index].clone();
-
-    let loser_original_player =
-        original_players[*loser_index].clone();
-
-    let winner_original_deck =
-        original_decks[winner_deck_index].clone();
-
-    let loser_original_deck =
-        original_decks[loser_deck_index].clone();
-
-    // -----------------------------
-    // UPDATE PLAYER RATINGS
-    // -----------------------------
-
-    update_player_rating_with_decks(
-        &mut players[winner_index],
-        &loser_original_player,
-        &winner_original_deck,
-        &loser_original_deck,
-        WIN_SCORE,
-    );
-
-    update_player_rating_with_decks(
-        &mut players[*loser_index],
-        &winner_original_player,
-        &loser_original_deck,
-        &winner_original_deck,
-        LOSS_SCORE,
-    );
-
-    // -----------------------------
-    // UPDATE DECK RATINGS
-    // -----------------------------
-
-    update_deck_rating(
-        &mut decks[winner_deck_index],
-        &loser_original_deck,
-        &winner_original_player,
-        &loser_original_player,
-        WIN_SCORE,
-    );
-
-    update_deck_rating(
-        &mut decks[loser_deck_index],
-        &winner_original_deck,
-        &loser_original_player,
-        &winner_original_player,
-        LOSS_SCORE,
-        );
+    // Apply everything at once.
+    for (pi, di, p_change, p_rd, d_change, d_rd) in updates {
+        players[pi].rating += p_change;
+        players[pi].rd = p_rd;
+        decks[di].rating += d_change;
+        decks[di].rd = d_rd;
     }
 
-        // Save the match so history and winrates can see it.
+    // Save the match so history and winrates can see it.
     matches.push(MatchRecord {
         players: selected_players,
         winner: players[winner_index].name.clone(),
         match_note: note,
         turn_win: winning_turn,
     });
-}
-
-// Updates a player's rating using the effective rating
-// of their opponent's player + deck combination.
-fn update_player_rating_with_decks(
-    player: &mut Player,
-    opponent: &Player,
-    player_deck: &Decks,
-    opponent_deck: &Decks,
-    score: f64,
-) {
-    // Effective ratings.
-    let player_effective =
-        effective_rating(player, player_deck);
-
-    let opponent_effective =
-        effective_rating(opponent, opponent_deck);
-
-    let g_rd = g(opponent_deck.rd);
-
-    // Expected score.
-    let e = 1.0 / (
-        1.0
-        + 10_f64.powf(
-            -g_rd
-                * (player_effective - opponent_effective)
-                / RATING_SCALE
-        )
-    );
-
-    // Variance.
-    let d2 = 1.0 / (
-        Q.powi(2)
-        * g_rd.powi(2)
-        * e
-        * (1.0 - e)
-    );
-
-    // Rating adjustment factor.
-    let pre_factor =
-        Q / ((1.0 / player.rd.powi(2)) + (1.0 / d2));
-
-    // Actual rating change.
-    let rating_change =
-        pre_factor * g_rd * (score - e);
-
-    // Player receives 70%.
-    player.rating += rating_change * PLAYER_SHARE;
-
-    // Update RD.
-    player.rd = (
-        (1.0 / player.rd.powi(2))
-        + (1.0 / d2)
-    )
-    .powf(-0.5)
-    .min(MAX_RD);
-
-    // Surprise factor.
-    let surprise = (score - e).abs();
-
-    if surprise > SURPRISE_THRESHOLD {
-        player.rd += (surprise - SURPRISE_THRESHOLD) * SURPRISE_RD_INCREASE_SCALE;
-    } else {
-        player.rd -= (SURPRISE_THRESHOLD - surprise) * SURPRISE_RD_DECREASE_SCALE;
-    }
-
-    // Clamp RD.
-    player.rd = player.rd.clamp(MIN_RD, MAX_RD);
 }
 
 //---
