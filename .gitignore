@@ -1,5 +1,6 @@
 /target
 /matches.json
 /players.json
+/decks.json
 /src/main.exe
 /src/main.pdb
