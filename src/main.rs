@@ -64,6 +64,7 @@ struct MatchPlayer {
     commander: String,
 }
 
+#[derive(Debug)]
 struct Opponent {
     effective: f64,
     deck_rd: f64,
@@ -155,34 +156,42 @@ fn glicko_update(
     share: f64,
     opponents: &[Opponent],
 ) -> (f64, f64) {
-    let mut varience_sum = 0.0;
+    let mut variance_sum = 0.0;
     let mut score_sum = 0.0;
-    let mut surpise_sum = 0.0;
+    let mut surprise_sum = 0.0;
 
     for opp in opponents {
         let g_rd = g(opp.deck_rd);
-        let e = 1.0 / 
-            (1.0 / 10_f64.powf(-g_rd * (own_effective - opp.effective) / RATING_SCALE));
-        
-        varience_sum += g_rd.powi(2) * e * (1.0 - e);
+        let e = 1.0
+            / (1.0 + 10_f64.powf(-g_rd * (own_effective - opp.effective) / RATING_SCALE));
+
+        variance_sum += g_rd.powi(2) * e * (1.0 - e);
         score_sum += g_rd * (opp.score - e);
-        surpise_sum += (opp.score - e).abs();
+        surprise_sum += (opp.score - e).abs();
     }
 
-    let d2 = 1.0 / (Q.powi(2) * varience_sum);
+    let d2 = 1.0 / (Q.powi(2) * variance_sum);
     let precision = 1.0 / own_rd.powi(2) + 1.0 / d2;
 
     let rating_change = Q / precision * score_sum * share;
 
     let mut new_rd = precision.powf(-0.5).min(MAX_RD);
 
-    // Surprise adjustment, avereged over the opponents faced
-    let surprise  = surpise_sum / opponents.len() as f64;
+    // Surprise adjustment, averaged over the opponents faced
+    let surprise = surprise_sum / opponents.len() as f64;
     if surprise > SURPRISE_THRESHOLD {
-        new_rd += (SURPRISE_THRESHOLD - surprise) * SURPRISE_RD_INCREASE_SCALE;
+        new_rd += (surprise - SURPRISE_THRESHOLD) * SURPRISE_RD_INCREASE_SCALE;
     } else {
         new_rd -= (SURPRISE_THRESHOLD - surprise) * SURPRISE_RD_DECREASE_SCALE;
     }
+
+    // Debug (remove after testing)
+    println!(
+        "DEBUG own_eff={:.1} own_rd={:.1} share={} opps={:?} d2={:.3e} precision={:.3e} new_rd(pre-clamp)={:.1} change={:.2}",
+        own_effective, own_rd, share,
+        opponents.iter().map(|o| (o.effective.round(), o.deck_rd.round(), o.score)).collect::<Vec<_>>(),
+        d2, precision, new_rd, rating_change
+    );
 
     (rating_change, new_rd.clamp(MIN_RD, MAX_RD))
 }

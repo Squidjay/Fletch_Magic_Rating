@@ -24,7 +24,49 @@
     "name": "Prismari Artistry",
     "bracket": 2,
     "type_of_deck": "High mana // Spellslinger",
-    "rating": 1308.4583654005792,
-    "rd": 330.0
+    "rating": 1319.8946981335484,
+    "rd": 45.01171398620312
+  },
+  {
+    "name": "Explorers of the Deep",
+    "bracket": 2,
+    "type_of_deck": "Tribal // +1/+1 Counters",
+    "rating": 1568.110340937508,
+    "rd": 310.9550959822266
+  },
+  {
+    "name": "Prismatic Conjurings",
+    "bracket": 3,
+    "type_of_deck": "Spellslinger",
+    "rating": 1705.819457894446,
+    "rd": 326.9930918360294
+  },
+  {
+    "name": "Mardu Surge",
+    "bracket": 2,
+    "type_of_deck": "Tokens // Aristocrat",
+    "rating": 1659.8116583612573,
+    "rd": 329.5064409054722
+  },
+  {
+    "name": "Tyranid Swarm",
+    "bracket": 2,
+    "type_of_deck": "X spells // +1/+1 Counters",
+    "rating": 1660.4768209283895,
+    "rd": 329.92417494978406
+  },
+  {
+    "name": "Blight Curse",
+    "bracket": 2,
+    "type_of_deck": "-1/-1 Counter",
+    "rating": 1245.41344554009,
+    "rd": 350.0
+  },
+  {
+    "name": "Graveyard Overdrive",
+    "bracket": 2,
+    "type_of_deck": "Reanimator // Goyf",
+    "rating": 1450.0719983886822,
+    "rd": 344.76466976901025
   }
 ]
